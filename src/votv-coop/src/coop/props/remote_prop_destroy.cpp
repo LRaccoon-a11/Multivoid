@@ -31,6 +31,7 @@
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"              // P::name::ActorClassName / DestroyActorFn
 
+#include <chrono>
 #include <string>
 
 namespace coop::remote_prop {
@@ -39,6 +40,12 @@ namespace P = ue_wrap::profile;
 namespace R = ue_wrap::reflection;
 
 namespace {
+
+// How long after a local key mint an eid-less destroy naming that key is treated as stale. One
+// one-way hop plus queueing is the real bound (the container conflict window uses the same order
+// for the same reason); the newborn is only reachable by key for this long, since the sender binds
+// our eid the moment it learns the spawn.
+constexpr uint64_t kKeyRemintGuardMs = 1500;
 
 // The cached destroy UFunction for receiver-side destroys.
 void* g_destroyActorFn = nullptr;
@@ -148,6 +155,33 @@ bool OnDestroyImpl_(const coop::net::PropDestroyPayload& payload, void* localPla
             return false;
         }
         actor = coop::prop_element_tracker::ResolveLiveActorByKey(keyW);
+        // The stale keyed-destroy guard. An eid-less destroy is the sender's own save-loaded copy
+        // going away (prop_destroy_seam sends 0 when it held no Element), so it names the identity
+        // the key had when the sender authored it. The game re-uses a save key across lives: eject
+        // a disc a drive consumed and the fresh actor enrols under the same key, and a destroy
+        // still in flight for the consumed one then resolved onto the newborn and reaped it a tick
+        // after its spawn broadcast -- a disc that vanished in mid-air on both peers. Refuse a
+        // destroy whose key was minted here inside the window: the sender provably had not seen
+        // this identity, and once it does its mirror carries our eid, so a real destroy of the new
+        // actor arrives by eid and never reaches this branch. Host only -- a client's census
+        // indexes keyed props without minting, so no re-mint can race a message there.
+        const bool senderHadNoEid = (payload.elementId == 0 ||
+                                     payload.elementId == coop::element::kInvalidId);
+        if (actor && senderHadNoEid && coop::prop_element_tracker::SessionIsHost()) {
+            const uint64_t mintedMs = coop::prop_element_tracker::LastKeyMintMs(keyW);
+            const uint64_t nowMs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            if (mintedMs != 0 && nowMs - mintedMs <= kKeyRemintGuardMs) {
+                UE_LOGW("remote_prop::OnDestroy: key '%ls' eid=%u -- STALE, this key was minted here "
+                        "%llu ms ago (actor %p); the sender authored its destroy for the previous "
+                        "life of the key and cannot have seen this one -- refusing (re-used save "
+                        "key; the new actor keeps living)",
+                        keyW.c_str(), payload.elementId,
+                        static_cast<unsigned long long>(nowMs - mintedMs), actor);
+                return false;
+            }
+        }
     }
     // Now drain the wire-received mirror element. It must vacate the registry whether or not the
     // local actor still exists (an echo bounce where we initiated the destroy and the actor is

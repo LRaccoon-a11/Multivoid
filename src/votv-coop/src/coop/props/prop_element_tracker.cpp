@@ -26,6 +26,8 @@
 #include "ue_wrap/core/sdk_profile.h"
 
 #include <atomic>
+#include <chrono>
+#include <iterator>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -81,6 +83,37 @@ using coop::element::PropMirrors;   // canonical accessor (coop/element/mirror_m
 
 // The key-to-actor index lives in prop_key_index.cpp; this file reaches it through
 // IndexKeyForActor_ and EraseKeyIndexForActor_.
+
+// ---- the key mint stamps ----
+// When this peer last minted an identity for a key, read by the destroy receiver's stale-message
+// guard. Keyed by the enrolled key, so a re-key stamps the fresh key, which is the identity a
+// later message can legitimately name. MarkPropElement can run on a parallel-anim worker, so the
+// map is mutexed; no engine call under the lock.
+std::mutex g_keyMintMutex;
+std::unordered_map<std::wstring, uint64_t> g_keyMintMs;
+// Stamps older than the guard window cannot refuse anything, so the map is pruned of them once it
+// grows past the live keyed-interactable count (~2,000 on load); the cap is a backstop for a long
+// session of re-keys, not a steady-state path.
+constexpr size_t   kKeyMintStampCap = 4096;
+constexpr uint64_t kKeyMintStampTtlMs = 10000;
+
+uint64_t NowMs_() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void StampKeyMint_(const std::wstring& key) {
+    if (key.empty() || key == L"None") return;
+    const uint64_t now = NowMs_();
+    std::lock_guard<std::mutex> lk(g_keyMintMutex);
+    if (g_keyMintMs.size() >= kKeyMintStampCap) {
+        for (auto it = g_keyMintMs.begin(); it != g_keyMintMs.end();) {
+            it = (now - it->second > kKeyMintStampTtlMs) ? g_keyMintMs.erase(it) : std::next(it);
+        }
+    }
+    g_keyMintMs[key] = now;
+}
 
 }  // namespace
 
@@ -309,7 +342,17 @@ std::wstring MarkPropElement(void* actor, const std::wstring& key, const std::ws
     // Index key to actor for the connect re-snapshot's O(1) wire-key de-dupe, after the commit and
     // only on the winning path, so the index and the reverse stay consistent.
     IndexKeyForActor_(actor, enrollKey, internalIdx);
+    // Stamp the mint instant on the same winning path: this is the moment the key started naming
+    // this actor, which is what the destroy receiver compares an eid-less message against.
+    StampKeyMint_(enrollKey);
     return enrollKey;
+}
+
+uint64_t LastKeyMintMs(const std::wstring& key) {
+    if (key.empty()) return 0;
+    std::lock_guard<std::mutex> lk(g_keyMintMutex);
+    auto it = g_keyMintMs.find(key);
+    return (it == g_keyMintMs.end()) ? 0u : it->second;
 }
 
 coop::element::ElementId GetPropElementIdForActor(void* actor) {

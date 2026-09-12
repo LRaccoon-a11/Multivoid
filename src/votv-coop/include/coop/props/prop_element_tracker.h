@@ -17,6 +17,7 @@
 #include "ue_wrap/core/types.h"  // ue_wrap::FVector
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -107,6 +108,13 @@ bool ReconcileIndexThrottled();
 // Re-indexes `actor` under `key` (after a fuzzy-match rekey, say), so a rekeyed held prop resolves
 // O(1) per grab; idempotent, a no-op for an empty or None key.
 void IndexActorKey(void* actor, const std::wstring& key);
+
+// The local mint instant per key, in steady_clock milliseconds, stamped by MarkPropElement on the
+// winning enrolment. A peer's eid-less PropDestroy names a copy the sender owned, so it cannot
+// mean an identity this peer minted after the sender authored it; the destroy receiver reads this
+// to refuse such a message instead of reaping the fresh actor. 0 when the key has never been
+// minted here. Thread-safe (MarkPropElement also runs on parallel-anim workers).
+uint64_t LastKeyMintMs(const std::wstring& key);
 
 // The join sweep's keyed universe: a client's save-loaded keyed props have no element row, the
 // index is their tracked membership, so the sweep adjudicates them from these entries (the row

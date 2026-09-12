@@ -60,6 +60,21 @@ and the prop it was meant to name never appears on that peer at all. The hand ax
 own hotbar actor and every peer's display mirror -- is excluded from the scan, the same set the
 prop census leaves out of its own walk.
 
+### How a death finds its local actor
+
+A destroy names a key and, when the sender held an element for the doomed actor, an id. The id is
+exact, so it is tried first; the key is the fallback for a prop the sender knew only from the save.
+A key alone is weaker than it looks, because the game re-uses a save key across lives: a disc a
+drive consumes and then returns is a new actor under the old key. A destroy authored for the
+consumed life and still in flight then resolves onto the returned one and reaps it a tick after its
+own birth crossed the wire, which is a prop vanishing in mid-air on both peers.
+
+So an id-less destroy is refused when its key was minted here inside the last second and a half.
+The sender cannot have meant an identity this peer had not yet announced, and once it learns the
+birth its mirror carries our id, so a real destroy of the new actor arrives by id and never takes
+the key path at all (`coop/props/remote_prop_destroy`, the mint stamp in
+`coop/props/prop_element_tracker`).
+
 ### Who authors a prop
 
 At rest, the host. A client never authors the existence of a shared-world prop: its own fresh
