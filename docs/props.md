@@ -52,6 +52,16 @@ within 30 cm of where the birth says it is; the first such prop is adopted, re-k
 key and bound. With no candidate at all, a fresh mirror is made
 (`coop/props/remote_prop_spawn`, `coop/props/prop_fresh_spawn`).
 
+Whichever way the actor is found, the wire key is written onto it through the game's own setKey
+before anything else reads it. That setter is declared in several places -- the chip pile and the
+garbage clump own theirs, the trash-bits pile takes the save actor's, the prop lineage takes the
+prop base's -- and the reflection lookup matches the exact declaring class, so resolving it means
+climbing from the actor's own class to the nearest ancestor that declares it
+(`coop/props/prop_synth_key`). Resolving only against the prop base instead missed every lineage
+but one: those mirrors spawned keyless, minted a random key of their own, and stopped answering to
+the key the host streams, so the host spawned them again -- a copy per spawn, which is how a
+client's base fills with trash.
+
 What that scan must never take is an actor that only looks like a world prop. A player's hand
 item is one: it is a real actor of the right class, it stands at that player's hands, and it
 belongs to the hand lane, which destroys it the moment the hand changes ([players.md](players.md)).

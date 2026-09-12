@@ -3,6 +3,7 @@
 // prop_wire_parity.
 
 #include "coop/props/prop_fresh_spawn.h"
+#include "coop/props/prop_synth_key.h"  // ResolveSetKeyFn, the shared setKey climb
 
 #include "coop/element/mirror_defer.h"        // instant-world: hide the fresh mirror until reveal
 #include "coop/props/join_membership_sweep.h" // RecordClaimIfTracking (claim BEFORE any failure return)
@@ -133,19 +134,16 @@ void* Materialize(const coop::net::PropSpawnPayload& payload, int senderSlot,
     // ends up with our wire key, registered in the gamemode's key maps cross-peer. setKey is
     // resolved on the actual spawned class first, since the pile, clump and trash classes have
     // their own setKey UFunctions on different classes with possibly different parameter layouts,
-    // and dispatching a foreign class's UFunction on an actor can corrupt memory. The lookup is
-    // exact-owner, no superclass climb, so a leaf that does not redeclare setKey (the crowbar)
-    // falls back to the base-resolved one for prop descendants; without the fallback such a
-    // mirror spawned keyless, the init minted a random key, the actor's field key diverged from its
-    // wire binding, the client's later pickup-destroy carried the minted key, and the host's
-    // authoritative copy survived, a host-side dupe.
-    void* setKeyFn = R::FindFunction(actorClass, P::name::PropSetKeyFn);
-    if (!setKeyFn && ue_wrap::prop::IsClassDescendantOfProp(actorClass)) {
-        setKeyFn = g_propSetKeyFn;
-        if (setKeyFn)
-            UE_LOGI("remote_prop::OnSpawn: setKey resolved on the Aprop_C base for leaf '%ls'",
-                    classW.c_str());
-    }
+    // and dispatching a foreign class's UFunction on an actor can corrupt memory. FindFunction is
+    // exact-owner, so the resolve climbs to the nearest ancestor that DECLARES setKey -- the same
+    // resolver the duplicate re-key uses, cached per class. A climb only ever finds what this class
+    // actually inherits, so it cannot reach a sibling lineage's setKey: actorChipPile and
+    // prop_garbageClump declare their own, trashBitsPile takes actor_save's, the prop lineage takes
+    // Aprop_C's. An Aprop-only fallback missed every one of the others, and such a mirror spawned
+    // keyless: the init minted a random key, the actor's field key diverged from its wire binding,
+    // the client's later pickup-destroy carried the minted key, and the host's authoritative copy
+    // survived -- a dupe per spawn, which is how a client's base filled with trash.
+    void* setKeyFn = coop::prop_synth_key::ResolveSetKeyFn(actorClass);
     if (!setKeyFn) {
         UE_LOGW("remote_prop::OnSpawn: setKey UFunction not found on class '%ls' -- spawn will use auto-generated Key",
                 classW.c_str());

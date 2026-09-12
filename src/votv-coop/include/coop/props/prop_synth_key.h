@@ -49,4 +49,12 @@ std::wstring EnsureKeyForBroadcast(void* self, const std::wstring& currentKey,
 // string on any failure, where the caller keeps the old key and logs. Game thread only.
 std::wstring MintFreshKeyForDuplicate(void* self);
 
+// The setKey resolver behind the mint, exported because every caller that writes a wire key onto a
+// freshly spawned actor needs the same climb: FindFunction is exact-owner, so a leaf that inherits
+// setKey (trashBitsPile takes actor_save's) resolves to null without it. Climbs from `cls` to the
+// nearest ancestor that declares setKey, up to 16 hops, and caches the answer per class. Never
+// returns a sibling lineage's UFunction -- only what this class actually inherits, which is what
+// makes dispatching it on the instance safe. Null when no ancestor declares it. Thread-safe.
+void* ResolveSetKeyFn(void* cls);
+
 }  // namespace coop::prop_synth_key

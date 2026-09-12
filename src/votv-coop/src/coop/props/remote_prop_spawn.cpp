@@ -4,6 +4,7 @@
 // binds it as the mirror; with no match a fresh mirror is materialised (prop_fresh_spawn.cpp).
 
 #include "coop/props/remote_prop_spawn.h"
+#include "coop/props/prop_synth_key.h"  // ResolveSetKeyFn, the shared setKey climb
 
 #include "coop/props/trash_pile_sync.h"  // the sweep's death-watch unwatch
 
@@ -511,8 +512,12 @@ void OnSpawn(const coop::net::PropSpawnPayload& payload, int senderSlot,
         // Rekey the matched actor to the wire Key: it otherwise keeps its client-local Key while
         // the host's PropPose carries the wire one, and the host's grab and move stream would be
         // dropped, a prop that de-duped but is invisible to the authoritative position stream.
-        // Aprop_C.setKey updates the gamemode's key map; the old entry is harmless.
-        if (void* propSetKeyFn = coop::prop_fresh_spawn::PropSetKeyFn()) {
+        // setKey updates the gamemode's key map; the old entry is harmless. Resolved on the matched
+        // actor's OWN class through the shared climb, not on the Aprop_C base: the fuzzy match is
+        // meant for the per-peer natural spawners, which are prop descendants, but dispatching one
+        // lineage's setKey on an actor of another is the memory-corruption case the fresh-spawn
+        // path already guards against, and a non-prop match here would have hit it.
+        if (void* propSetKeyFn = coop::prop_synth_key::ResolveSetKeyFn(R::ClassOf(fuzzy))) {
             const R::FName keyFName = ue_wrap::fname_utils::StringToFName(keyW);
             if (keyFName.ComparisonIndex != 0) {
                 ParamFrame sk(propSetKeyFn);
