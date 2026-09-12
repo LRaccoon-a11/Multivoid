@@ -98,6 +98,25 @@ bool OnOpenContainerCheckPickupPre(void* self, void* /*params*/) {
 // one shared callback that role-gates on the client and returns true, cancel-throttled per
 // class to keep the log readable while still proving the path fires.
 
+// The trash-bits cleaner class, resolved at install for the begin-play gate below. The same
+// resolve-once, pointer-compare shape the container filter uses: no allocation on a dispatch path.
+void* g_trashBitsCls = nullptr;
+
+// Resolve a UFunction on `cls` or on the ancestor that declares it. R::FindFunction is exact-owner
+// (reflection.h names SuperStructOf the primitive for precisely this climb), and a blueprint leaf
+// that overrides nothing owns no UFunction of its own, so the leaf-only lookup returns null for an
+// inherited event. Reports the declaring class, which the caller needs: a function found on an
+// ancestor is shared with every other descendant, so its interceptor must be class-gated.
+void* FindFunctionInherited(void* cls, const wchar_t* fn, void** outOwner, int maxHops = 16) {
+    for (int hop = 0; cls && hop < maxHops; ++hop, cls = R::SuperStructOf(cls)) {
+        if (void* f = R::FindFunction(cls, fn)) {
+            if (outOwner) *outOwner = cls;
+            return f;
+        }
+    }
+    return nullptr;
+}
+
 // The generic role-gated cancel for a periodic or event spawner. The callback uses a static
 // counter per call site (the macro), so each spawner's first three and every sixtieth log
 // lines are distinguishable.
@@ -119,10 +138,32 @@ MAKE_SPAWNER_CANCEL(OnEventTrashPilesOverlapPre,
                     "event_trashPiles.BndEvt")
 MAKE_SPAWNER_CANCEL(OnArirTrasherTrashPre,
                     "arirTrasher.trash")
-MAKE_SPAWNER_CANCEL(OnBaseCleanerTrashBitsBeginPlayPre,
-                    "baseCleaner_trashBits.BeginPlay")
-
 #undef MAKE_SPAWNER_CANCEL
+
+// The trash-bits begin-play cancel. Class-gated, unlike the two above: baseCleaner_trashBits_C
+// declares no ReceiveBeginPlay of its own, so the interceptor sits on whichever ancestor does --
+// in the limit Actor's, which every actor in the world dispatches. Cancelling on the owner alone
+// would stop begin-play for the whole client world; the gate keeps the cancel to the instances
+// this module is about. Descendants count, so a future trash-bits subclass is covered.
+bool IsTrashBitsInstance(void* self) {
+    if (!g_trashBitsCls) return false;  // not resolved yet
+    void* cls = R::ClassOf(self);
+    return cls && R::IsDescendantOfAny(cls, &g_trashBitsCls, 1);
+}
+
+bool OnBaseCleanerTrashBitsBeginPlayPre(void* self, void* /*params*/) {
+    auto* s = LoadSession();
+    // running()-gated, not bare role() -- the post-session SP-bleed class (see above)
+    if (!s || !s->running() || s->role() != coop::net::Role::Client) return false;
+    if (!IsTrashBitsInstance(self)) return false;
+    static std::atomic<uint64_t> sCount{0};
+    const uint64_t n = sCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 3 || (n % 60) == 0) {
+        UE_LOGI("garbage_sync[baseCleaner_trashBits.BeginPlay PRE]: client-cancel spawner %p (call #%llu)",
+                self, static_cast<unsigned long long>(n));
+    }
+    return true;
+}
 
 // State for the spawner installs, independent of the container latch so one success does
 // not pre-empt the other's retry loop.
@@ -136,32 +177,40 @@ bool InstallSpawnerSuppressors() {
         const wchar_t* fn;
         UFunctionInterceptor cb;
         const char* tag;
+        // Where the callback's class gate caches this leaf, for a target whose UFunction may be
+        // inherited; null for a target that owns its function and needs no gate.
+        void** gate;
     };
     // The bound-event name for the trash-piles event is the full canonical delegate signature
     // from the header dump; long names are routine in blueprint overlap handlers, and the
     // function lookup matches by name. The trash-bits cleaner has no methods of its own and
-    // inherits its begin-play from the base cleaner class; registering on the leaf picks up a
-    // future override, and otherwise the lookup walks up the superclass chain and returns the
-    // parent's UFunction, the same dispatch object.
+    // inherits its begin-play, so the leaf is tried first (a future override wins) and the
+    // declaring ancestor answers otherwise -- FindFunctionInherited does the climb R::FindFunction
+    // does not. An ancestor's UFunction is shared, so that target's interceptor is class-gated.
     const Target targets[] = {
         {L"event_trashPiles_C",
             L"BndEvt__event_funnyGascans_Box_K2Node_ComponentBoundEvent_0_ComponentBeginOverlapSignature__DelegateSignature",
             &OnEventTrashPilesOverlapPre,
-            "event_trashPiles.BndEvt"},
+            "event_trashPiles.BndEvt", nullptr},
         {L"arirTrasher_C", L"trash",
             &OnArirTrasherTrashPre,
-            "arirTrasher.trash"},
+            "arirTrasher.trash", nullptr},
         {L"baseCleaner_trashBits_C", L"ReceiveBeginPlay",
             &OnBaseCleanerTrashBitsBeginPlayPre,
-            "baseCleaner_trashBits.BeginPlay"},
+            "baseCleaner_trashBits.BeginPlay", &g_trashBitsCls},
     };
     int registered = 0;
     for (const auto& t : targets) {
         void* cls = R::FindClass(t.cls);
         if (!cls) continue;  // BP class not loaded yet; retry next Install()
-        void* fn = R::FindFunction(cls, t.fn);
+        // Publish the gate class before the interceptor can fire: a callback that runs while its
+        // gate is still null sees no instance as its own and cancels nothing, which is the safe
+        // direction but would let the first spawns through.
+        if (t.gate) *t.gate = cls;
+        void* owner = nullptr;
+        void* fn = FindFunctionInherited(cls, t.fn, &owner);
         if (!fn) {
-            UE_LOGW("garbage_sync[spawner]: UFunction '%ls' not found on %ls -- skipping",
+            UE_LOGW("garbage_sync[spawner]: UFunction '%ls' not found on %ls or any ancestor -- skipping",
                     t.fn, t.cls);
             continue;
         }
@@ -171,8 +220,14 @@ bool InstallSpawnerSuppressors() {
             continue;
         }
         ++registered;
-        UE_LOGI("garbage_sync[spawner]: PRE-interceptor installed -- %ls::%ls (%s)",
-                t.cls, t.fn, t.tag);
+        if (owner == cls) {
+            UE_LOGI("garbage_sync[spawner]: PRE-interceptor installed -- %ls::%ls (%s)",
+                    t.cls, t.fn, t.tag);
+        } else {
+            UE_LOGI("garbage_sync[spawner]: PRE-interceptor installed -- %ls::%ls declared on %ls "
+                    "(%s; inherited UFunction is shared, so the callback gates on the class)",
+                    t.cls, t.fn, R::ToString(R::NameOf(owner)).c_str(), t.tag);
+        }
     }
     // Latch as installed only when all targets resolved and registered: a partial install
     // leaves some spawners ungated and the per-peer divergence remains. Retry on the next

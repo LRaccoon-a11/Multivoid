@@ -101,6 +101,21 @@ outside a transition window) and broadcast as the ordinary keyed destroy. The di
 born keyless and grabbed the same frame; the held-edge broadcast mints it a key and spawns the
 mirror on every peer (`coop/props/trash_collect_sync`).
 
+### Who may spawn trash
+
+Trash that appears on its own is the host's to roll. A client cancels the three blueprint
+spawners whose output belongs to the pile and keyed universes -- the trash-piles overlap, the
+trasher's own verb, and the bits cleaner's begin-play -- and takes the host's spawns back over
+the wire instead (`coop/interactables/garbage_sync`). The toolgun and the underground spawner are
+deliberately left alone: one is a per-shot player action, the other mints only per-peer dirt
+mounds.
+
+Two of those three cancels sit on a function the blueprint class declares itself. The bits
+cleaner declares none, so its interceptor sits on whichever ancestor does, and an inherited
+function is shared with every other descendant of that ancestor -- in the limit every actor in
+the world. That target's callback therefore gates on the class before it cancels, and the two
+that own their functions do not need to.
+
 ### Save-loaded piles at a join
 
 A joiner's world comes from the host's save, so the client has its own copy of every pile. The
