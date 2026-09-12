@@ -20,6 +20,7 @@
 #include "coop/player/players_registry.h"       // coop::players::kMaxPeers (ownerSlot bound)
 #include "coop/element/quiescence_drain.h"      // ArmGhostSweep (a displaced live native -> wholesale adjudication)
 #include "coop/props/prop_element_tracker.h"   // RebindLocalElementActor (local-element morph re-skin)
+#include "coop/props/native_pile_mirror.h"     // IsPinned / Unpin (retire a displaced materialized pile)
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/actors/prop.h"                      // IsChipPile (the displaced-native ghost-arm class gate)
 #include "ue_wrap/core/reflection.h"
@@ -130,7 +131,10 @@ void CreateOrAdoptPropMirror(coop::element::ElementId eid, void* actor,
                 return;
             }
             void* old = existing->GetActor();
-            const bool oldLive = old && R::IsLiveByIndex(old, existing->GetInternalIdx());
+            const int32_t oldCachedIdx = existing->GetInternalIdx();
+            const bool oldLive = old && R::IsLiveByIndex(old, oldCachedIdx);
+            // Read before the rebind: whether the displaced actor is a pile this peer materialized.
+            const bool oldPinnedPile = old && coop::native_pile_mirror::IsPinned(old);
             existing->SetActor(actor, R::InternalIndexOf(actor));
             coop::kerfur_entity::NotifyKerfurPropMirrorBound(actor, eid);
             UE_LOGW("sync::CreateOrAdoptPropMirror: eid=%u HOST RE-ASSERT rebound row -> actor=%p key='%ls' "
@@ -141,6 +145,30 @@ void CreateOrAdoptPropMirror(coop::element::ElementId eid, void* actor,
             // would find. Arm the wholesale adjudication, the quiescence_drain reconcile's
             // GHOST-RETIRE tail: its OWN identity gets a re-bind chance in that same pass, binds
             // running before the retire, and failing that it is retired at once.
+            // A displaced pile this peer materialized. Its pin keeps it in the root set, so it has not
+            // been collected and its memory is mapped: its OWN index is readable, and that -- not the
+            // row's cached index -- says whether it is alive. The cached index has been seen to call a
+            // freshly landed, pinned pile dead, which routed it here as "dead/stale"; left alone it
+            // stayed rooted and visible forever, a pile per grab. Nothing else owns it once the row
+            // moves, so release the pin and, if it is still alive, destroy it.
+            if (oldPinnedPile) {
+                const int32_t ownIdx = R::InternalIndexOf(old);
+                const int32_t flags  = R::SlotFlags(ownIdx);
+                const bool ownLive   = R::IsLiveByIndex(old, ownIdx);
+                const bool unowned   = Registry::Get().EidForActor(old) == coop::element::kInvalidId;
+                UE_LOGW("sync::CreateOrAdoptPropMirror: eid=%u displaced MATERIALIZED pile %p -- cachedIdx=%d "
+                        "ownIdx=%d slotFlags=0x%08X ownLive=%d unowned=%d",
+                        eid, old, static_cast<int>(oldCachedIdx), static_cast<int>(ownIdx),
+                        static_cast<unsigned>(flags), ownLive ? 1 : 0, unowned ? 1 : 0);
+                coop::native_pile_mirror::Unpin(old);
+                if (ownLive && unowned) {
+                    coop::prop_element_tracker::UnmarkKnownKeyedProp(old);
+                    ue_wrap::engine::DestroyActor(old);
+                    UE_LOGI("sync::CreateOrAdoptPropMirror: eid=%u displaced materialized pile %p RETIRED "
+                            "(pin released, destroyed)", eid, old);
+                }
+                return;
+            }
             if (oldLive && ue_wrap::prop::IsChipPile(old))
                 coop::element::quiescence_drain::ArmGhostSweep();
             return;

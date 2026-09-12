@@ -53,6 +53,11 @@ void RepositionBoundNative(void* native, uint8_t chipType, const ue_wrap::FVecto
 // Game thread.
 void Unpin(void* actor);
 
+// True iff Materialize pinned `actor` and the pin is still held. A pinned actor is in the root set,
+// so it cannot have been collected and its memory is mapped: a caller may read its own internal
+// index to judge liveness, where a row's cached index may be stale. Pointer lookup only. Game thread.
+bool IsPinned(void* actor);
+
 // Drop every pin this module still holds. Called from the session teardown: a materialized
 // native that is simply still alive when the session ends has no destroy path to ride, and a
 // pin nobody releases anchors its whole world's Outer chain -- the shape that made a rejoin

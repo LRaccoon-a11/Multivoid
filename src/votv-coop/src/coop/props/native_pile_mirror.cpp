@@ -96,6 +96,11 @@ void Unpin(void* actor) {
     g_pins.erase(actor);  // no-op when we never pinned it (save-loaded / game-native)
 }
 
+bool IsPinned(void* actor) {
+    UE_ASSERT_GAME_THREAD("native_pile_mirror::IsPinned");
+    return actor && g_pins.find(actor) != g_pins.end();
+}
+
 void OnDisconnect() {
     UE_ASSERT_GAME_THREAD("native_pile_mirror::OnDisconnect");
     if (g_pins.empty()) return;

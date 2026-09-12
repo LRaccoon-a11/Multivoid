@@ -124,6 +124,13 @@ permanent one, and a player who picks a pile up and drops it a dozen times ends 
 heap of them. The retire covers both provenances, the pile a join adopted and the pile an earlier
 land materialized here, on the same conditions: a chip pile, still live, and no row left owning it.
 
+The row a grab moves can also move on the host's re-assert, which judges the displaced actor by the
+row's cached object index. That index has been seen to call a freshly landed pile dead, and a pile
+judged dead was left where it was. A pile this peer materialized is pinned, so it cannot have been
+collected and its own index is readable: the re-assert releases that pin and, when the pile's own
+index says it is alive, destroys it (`coop/element/identity_create`). Its log line records both
+indices and the slot flags, the evidence for why the cached one disagreed.
+
 ### Save-loaded piles at a join
 
 A joiner's world comes from the host's save, so the client has its own copy of every pile. The
