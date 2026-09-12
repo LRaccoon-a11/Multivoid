@@ -116,6 +116,14 @@ function is shared with every other descendant of that ancestor -- in the limit 
 the world. That target's callback therefore gates on the class before it cancels, and the two
 that own their functions do not need to.
 
+A grab does the reverse. The resting form is a real pile actor, the carried form is a proxy, and
+one identity cannot hold both: the row moves to the fresh clump proxy and the pile it leaves is
+retired -- its mark dropped, its pin released, the actor destroyed. A materialized pile is rooted
+on purpose, so skipping that retire does not leave a stray the collector tidies later; it leaves a
+permanent one, and a player who picks a pile up and drops it a dozen times ends up standing in a
+heap of them. The retire covers both provenances, the pile a join adopted and the pile an earlier
+land materialized here, on the same conditions: a chip pile, still live, and no row left owning it.
+
 ### Save-loaded piles at a join
 
 A joiner's world comes from the host's save, so the client has its own copy of every pile. The

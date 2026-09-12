@@ -4,6 +4,7 @@
 #include "coop/props/remote_prop.h"
 #include "remote_prop_internal.h"  // ResolveLiveActorByEid + DestroyEchoSuppressed (impl-private seam)
 
+#include "coop/element/registry.h"          // EidForActor, the 1:1 owner check on a displaced native
 #include "coop/element/quiescence_drain.h"   // ArmPendingSaveTimeTwin (capture-only)
 #include "coop/props/native_pile_mirror.h"   // Materialize / RepositionBoundNative (nativize a landed pile)
 #include "coop/props/prop_element_tracker.h"
@@ -172,6 +173,25 @@ void* OnConvert(const coop::net::PropConvertPayload& payload, void* localPlayer,
                 UE_LOGI("[PILE] CLIENT recv convert %s eid=%u ctx=%u -> proxy SPAWNED %s (convert beat its spawn) "
                         "[SYNC-MIRROR OK -- no dup]", edge, E, static_cast<unsigned>(payload.ctx),
                         wantClump ? "CLUMP" : "PILE");
+                // The displaced-native retire, the other half of the hand-off above. That branch
+                // only fires for a native the save-identity bind marked; a native this peer
+                // MATERIALIZED for an earlier land is not marked, so a grab landed here instead and
+                // the register's host re-assert moved the row onto the fresh proxy while the native
+                // stayed behind. A materialized native is ROOTED, so nothing collects it: one dead
+                // pile per grab, and a base that fills with trash over a session. Retire it on the
+                // same three conditions the marked path uses -- it is a chip pile, it is still
+                // live, and the rebind left no row owning it, so it is nobody else's rendering.
+                if (boundNative && boundNative != proxy && R::IsLive(boundNative) &&
+                    ue_wrap::prop::IsChipPile(boundNative) &&
+                    coop::element::Registry::Get().EidForActor(boundNative) ==
+                        coop::element::kInvalidId) {
+                    coop::prop_element_tracker::UnmarkKnownKeyedProp(boundNative);
+                    coop::native_pile_mirror::Unpin(boundNative);
+                    E::DestroyActor(boundNative);
+                    UE_LOGI("[PILE] CLIENT convert %s eid=%u -> displaced native pile %p RETIRED "
+                            "(row moved to proxy=%p, no other row owns it; a rooted leftover is the "
+                            "per-grab pile leak)", edge, E, boundNative, proxy);
+                }
             }
         } else {
             UE_LOGW("[PILE] CLIENT recv convert %s eid=%u -- proxy spawn-on-convert FAILED (DESYNC)", edge, E);
